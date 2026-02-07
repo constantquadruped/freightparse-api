@@ -1,0 +1,279 @@
+openapi: 3.0.3
+info:
+  title: FreightParse API
+  description: |
+    Turn messy shipping documents into clean, structured JSON.
+
+    **Supported documents:**
+    - Bills of Lading (BOL) — extract shipper, consignee, containers, ports, weights
+    - Freight Invoices — extract charges, line items, references, payment terms
+    - Packing Lists — extract items, quantities, weights, HS codes, dimensions
+
+    **How it works:** Paste raw text or OCR output from your freight documents.
+    The API returns structured JSON with typed fields, confidence scores, and warnings.
+
+    **Accuracy:** Powered by Claude AI with freight-specific parsing prompts.
+    Handles major carriers (Maersk, MSC, CMA CGM, Hapag-Lloyd, etc.) and
+    standard freight document formats.
+  version: 1.0.0
+  contact:
+    name: FreightParse Support
+
+servers:
+  - url: https://freightparse-api.fly.dev
+
+paths:
+  /parse-bol:
+    post:
+      operationId: parseBOL
+      summary: Parse Bill of Lading
+      description: Extract structured data from a Bill of Lading document.
+      tags: [Parsing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 20
+                  maxLength: 50000
+                  description: Raw BOL text or OCR output
+                carrier_hint:
+                  type: string
+                  description: "Carrier name for better parsing (e.g. 'Maersk', 'MSC')"
+            example:
+              text: "BILL OF LADING\nB/L No: MEDU4712839\nSHIPPER: Guangzhou Sunrise Electronics..."
+              carrier_hint: "MSC"
+      responses:
+        "200":
+          description: Parsed BOL data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BOLResponse"
+        "401":
+          description: Invalid API key
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limit exceeded
+        "502":
+          description: AI parsing failure
+
+  /parse-freight-invoice:
+    post:
+      operationId: parseFreightInvoice
+      summary: Parse Freight Invoice
+      description: Extract structured data from a freight/shipping invoice.
+      tags: [Parsing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 20
+                  maxLength: 50000
+                  description: Raw freight invoice text or OCR output
+            example:
+              text: "FREIGHT INVOICE\nINVOICE NO: APX-2026-00847\nOcean Freight: $4,200.00..."
+      responses:
+        "200":
+          description: Parsed invoice data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FreightInvoiceResponse"
+        "401":
+          description: Invalid API key
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limit exceeded
+        "502":
+          description: AI parsing failure
+
+  /parse-packing-list:
+    post:
+      operationId: parsePackingList
+      summary: Parse Packing List
+      description: Extract structured data from a packing list document.
+      tags: [Parsing]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 20
+                  maxLength: 50000
+                  description: Raw packing list text or OCR output
+            example:
+              text: "PACKING LIST\nPL No: PL-GZ-2026-0471\nItem: 27\" LED Monitor..."
+      responses:
+        "200":
+          description: Parsed packing list data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackingListResponse"
+        "401":
+          description: Invalid API key
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limit exceeded
+        "502":
+          description: AI parsing failure
+
+components:
+  schemas:
+    Party:
+      type: object
+      properties:
+        name: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        contact: { type: string, nullable: true }
+
+    Container:
+      type: object
+      properties:
+        number: { type: string, nullable: true }
+        size: { type: string, nullable: true }
+        type: { type: string, nullable: true }
+        seal_number: { type: string, nullable: true }
+        weight_kg: { type: number, nullable: true }
+
+    BOLResponse:
+      type: object
+      properties:
+        bol_number: { type: string, nullable: true }
+        booking_number: { type: string, nullable: true }
+        shipper: { $ref: "#/components/schemas/Party" }
+        consignee: { $ref: "#/components/schemas/Party" }
+        notify_party: { $ref: "#/components/schemas/Party" }
+        carrier: { type: string, nullable: true }
+        vessel_name: { type: string, nullable: true }
+        voyage_number: { type: string, nullable: true }
+        port_of_loading: { type: string, nullable: true }
+        port_of_discharge: { type: string, nullable: true }
+        place_of_delivery: { type: string, nullable: true }
+        date_of_issue: { type: string, nullable: true }
+        shipped_on_board_date: { type: string, nullable: true }
+        containers:
+          type: array
+          items: { $ref: "#/components/schemas/Container" }
+        commodity_description: { type: string, nullable: true }
+        gross_weight_kg: { type: number, nullable: true }
+        number_of_packages: { type: integer, nullable: true }
+        package_type: { type: string, nullable: true }
+        freight_terms: { type: string, nullable: true }
+        hs_codes:
+          type: array
+          items: { type: string }
+        confidence: { type: number }
+        warnings:
+          type: array
+          items: { type: string }
+
+    InvoiceLineItem:
+      type: object
+      properties:
+        description: { type: string }
+        charge_type: { type: string, nullable: true }
+        amount: { type: number, nullable: true }
+        currency: { type: string, nullable: true }
+        reference: { type: string, nullable: true }
+
+    FreightInvoiceResponse:
+      type: object
+      properties:
+        invoice_number: { type: string, nullable: true }
+        invoice_date: { type: string, nullable: true }
+        due_date: { type: string, nullable: true }
+        vendor_name: { type: string, nullable: true }
+        vendor_address: { type: string, nullable: true }
+        bill_to_name: { type: string, nullable: true }
+        bill_to_address: { type: string, nullable: true }
+        bol_references:
+          type: array
+          items: { type: string }
+        container_references:
+          type: array
+          items: { type: string }
+        po_references:
+          type: array
+          items: { type: string }
+        line_items:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceLineItem" }
+        subtotal: { type: number, nullable: true }
+        tax: { type: number, nullable: true }
+        total: { type: number, nullable: true }
+        currency: { type: string, nullable: true }
+        payment_terms: { type: string, nullable: true }
+        charge_breakdown: { type: object, nullable: true }
+        confidence: { type: number }
+        warnings:
+          type: array
+          items: { type: string }
+
+    PackingListItem:
+      type: object
+      properties:
+        item_number: { type: string, nullable: true }
+        description: { type: string }
+        quantity: { type: number, nullable: true }
+        unit: { type: string, nullable: true }
+        net_weight_kg: { type: number, nullable: true }
+        gross_weight_kg: { type: number, nullable: true }
+        dimensions: { type: string, nullable: true }
+        hs_code: { type: string, nullable: true }
+        country_of_origin: { type: string, nullable: true }
+        carton_numbers: { type: string, nullable: true }
+
+    PackingListResponse:
+      type: object
+      properties:
+        packing_list_number: { type: string, nullable: true }
+        date: { type: string, nullable: true }
+        shipper: { type: string, nullable: true }
+        consignee: { type: string, nullable: true }
+        po_references:
+          type: array
+          items: { type: string }
+        invoice_references:
+          type: array
+          items: { type: string }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PackingListItem" }
+        total_packages: { type: integer, nullable: true }
+        total_gross_weight_kg: { type: number, nullable: true }
+        total_net_weight_kg: { type: number, nullable: true }
+        total_volume_cbm: { type: number, nullable: true }
+        confidence: { type: number }
+        warnings:
+          type: array
+          items: { type: string }
+
+  securitySchemes:
+    RapidAPIKey:
+      type: apiKey
+      in: header
+      name: X-RapidAPI-Key
+
+security:
+  - RapidAPIKey: []
