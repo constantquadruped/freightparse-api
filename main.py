@@ -4,6 +4,7 @@ Parses Bills of Lading, freight invoices, and packing lists using Claude.
 """
 
 import anthropic
+import io
 import json
 import os
 import time
@@ -11,7 +12,8 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Security, Depends
+import pdfplumber
+from fastapi import FastAPI, File, Form, HTTPException, Request, Security, Depends, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -24,7 +26,7 @@ app = FastAPI(
     title="FreightParse API",
     description="Turn messy shipping documents into clean, structured JSON. "
     "Parses Bills of Lading, freight invoices, and packing lists.",
-    version="1.0.0",
+    version="1.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -337,6 +339,115 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
+# File extraction helper
+# ---------------------------------------------------------------------------
+
+SUPPORTED_MIME_TYPES = {
+    "application/pdf",
+    "text/plain",
+    "text/csv",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+}
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+async def extract_text_from_upload(file: UploadFile) -> str:
+    """Extract text from an uploaded file (PDF, image, or plain text)."""
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Max 10 MB.")
+
+    content_type = file.content_type or ""
+    filename = (file.filename or "").lower()
+
+    # Plain text files
+    if content_type.startswith("text/") or filename.endswith(".txt"):
+        return content.decode("utf-8", errors="replace")
+
+    # PDF files
+    if content_type == "application/pdf" or filename.endswith(".pdf"):
+        try:
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                pages = []
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        pages.append(text)
+                    # Also extract tables as text
+                    tables = page.extract_tables()
+                    for table in tables:
+                        for row in table:
+                            row_text = " | ".join(
+                                str(cell) if cell else "" for cell in row
+                            )
+                            pages.append(row_text)
+                extracted = "\n".join(pages)
+                if not extracted.strip():
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Could not extract text from PDF. The file may be image-only. "
+                        "Try using an OCR tool first, then submit the text.",
+                    )
+                return extracted
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Failed to read PDF: {str(e)}")
+
+    # Images — use Claude's vision capability
+    if content_type.startswith("image/"):
+        import base64
+
+        b64 = base64.b64encode(content).decode("utf-8")
+        media_type = content_type
+        if media_type not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+            media_type = "image/png"  # fallback
+
+        try:
+            client = get_client()
+            message = client.messages.create(
+                model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514"),
+                max_tokens=4096,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": "Extract ALL text from this shipping document image. "
+                                "Include every detail: numbers, addresses, weights, "
+                                "dimensions, dates, reference numbers, table data. "
+                                "Return the raw text only, no commentary.",
+                            },
+                        ],
+                    }
+                ],
+            )
+            return message.content[0].text
+        except anthropic.APIError as e:
+            raise HTTPException(status_code=502, detail=f"Vision extraction error: {e.message}")
+
+    raise HTTPException(
+        status_code=415,
+        detail=f"Unsupported file type: {content_type}. "
+        "Supported: PDF, PNG, JPEG, WebP, GIF, plain text.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Parsing helper
 # ---------------------------------------------------------------------------
 
@@ -378,11 +489,14 @@ def parse_document(system_prompt: str, text: str, carrier_hint: str = None) -> d
 async def root():
     return {
         "service": "FreightParse API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "endpoints": [
-            {"path": "/parse-bol", "method": "POST", "description": "Parse Bill of Lading"},
-            {"path": "/parse-freight-invoice", "method": "POST", "description": "Parse freight invoice"},
-            {"path": "/parse-packing-list", "method": "POST", "description": "Parse packing list"},
+            {"path": "/parse-bol", "method": "POST", "description": "Parse Bill of Lading (text)"},
+            {"path": "/parse-freight-invoice", "method": "POST", "description": "Parse freight invoice (text)"},
+            {"path": "/parse-packing-list", "method": "POST", "description": "Parse packing list (text)"},
+            {"path": "/parse-bol/upload", "method": "POST", "description": "Parse Bill of Lading (file upload: PDF/image/text)"},
+            {"path": "/parse-freight-invoice/upload", "method": "POST", "description": "Parse freight invoice (file upload: PDF/image/text)"},
+            {"path": "/parse-packing-list/upload", "method": "POST", "description": "Parse packing list (file upload: PDF/image/text)"},
         ],
         "docs": "/docs",
     }
@@ -411,6 +525,47 @@ async def parse_freight_invoice(req: FreightInvoiceRequest, auth: str = Depends(
 async def parse_packing_list(req: PackingListRequest, auth: str = Depends(verify_api_key)):
     check_rate_limit(auth)
     data = parse_document(PACKING_LIST_SYSTEM_PROMPT, req.text)
+    return PackingListResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# File upload endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/parse-bol/upload", response_model=BOLResponse)
+async def parse_bol_upload(
+    file: UploadFile = File(..., description="PDF, image, or text file of a Bill of Lading"),
+    carrier_hint: Optional[str] = Form(None, description="Carrier name hint"),
+    auth: str = Depends(verify_api_key),
+):
+    """Parse a Bill of Lading from an uploaded file (PDF, image, or text)."""
+    check_rate_limit(auth)
+    text = await extract_text_from_upload(file)
+    data = parse_document(BOL_SYSTEM_PROMPT, text, carrier_hint)
+    return BOLResponse(**data)
+
+
+@app.post("/parse-freight-invoice/upload", response_model=FreightInvoiceResponse)
+async def parse_freight_invoice_upload(
+    file: UploadFile = File(..., description="PDF, image, or text file of a freight invoice"),
+    auth: str = Depends(verify_api_key),
+):
+    """Parse a freight invoice from an uploaded file (PDF, image, or text)."""
+    check_rate_limit(auth)
+    text = await extract_text_from_upload(file)
+    data = parse_document(INVOICE_SYSTEM_PROMPT, text)
+    return FreightInvoiceResponse(**data)
+
+
+@app.post("/parse-packing-list/upload", response_model=PackingListResponse)
+async def parse_packing_list_upload(
+    file: UploadFile = File(..., description="PDF, image, or text file of a packing list"),
+    auth: str = Depends(verify_api_key),
+):
+    """Parse a packing list from an uploaded file (PDF, image, or text)."""
+    check_rate_limit(auth)
+    text = await extract_text_from_upload(file)
+    data = parse_document(PACKING_LIST_SYSTEM_PROMPT, text)
     return PackingListResponse(**data)
 
 
