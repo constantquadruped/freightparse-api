@@ -13,8 +13,11 @@ from functools import lru_cache
 from typing import Optional
 
 import pdfplumber
+from pathlib import Path
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, Security, Depends, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
@@ -37,6 +40,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/demo", include_in_schema=False)
+async def demo_page():
+    """Serve the upload demo page."""
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+
 
 # ---------------------------------------------------------------------------
 # Auth

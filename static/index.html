@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreightParse — AI Document Parser</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
+  header { background: #1a1a2e; color: #fff; padding: 1.5rem 2rem; text-align: center; }
+  header h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.5px; }
+  header h1 span { color: #4a9eff; }
+  header p { font-size: 0.85rem; color: #8892a4; margin-top: 0.3rem; }
+  .container { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  .card { background: #fff; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 1.5rem; }
+  label { display: block; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.4rem; color: #444; }
+  select, input[type="text"] { width: 100%; padding: 0.6rem 0.8rem; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.9rem; outline: none; transition: border 0.2s; }
+  select:focus, input[type="text"]:focus { border-color: #4a9eff; }
+  .row { display: flex; gap: 1rem; margin-bottom: 1rem; }
+  .row > div { flex: 1; }
+  .dropzone { border: 2px dashed #c5cdd8; border-radius: 12px; padding: 2.5rem 1rem; text-align: center; cursor: pointer; transition: all 0.2s; margin-top: 1rem; }
+  .dropzone:hover, .dropzone.dragover { border-color: #4a9eff; background: #f0f7ff; }
+  .dropzone.has-file { border-color: #22c55e; background: #f0fdf4; }
+  .dropzone-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+  .dropzone p { color: #6b7280; font-size: 0.9rem; }
+  .dropzone .filename { color: #1a1a2e; font-weight: 600; font-size: 1rem; margin-top: 0.3rem; }
+  .dropzone input { display: none; }
+  .btn { display: block; width: 100%; padding: 0.8rem; background: #4a9eff; color: #fff; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 1rem; }
+  .btn:hover { background: #3584e4; }
+  .btn:disabled { background: #a0c4ff; cursor: not-allowed; }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 0.4rem; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .results { display: none; }
+  .results.show { display: block; }
+  .results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  .results-header h3 { font-size: 1.1rem; }
+  .confidence { padding: 0.25rem 0.7rem; border-radius: 20px; font-size: 0.8rem; font-weight: 600; }
+  .confidence.high { background: #dcfce7; color: #166534; }
+  .confidence.medium { background: #fef9c3; color: #854d0e; }
+  .confidence.low { background: #fee2e2; color: #991b1b; }
+  .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+  .result-field { padding: 0.6rem; background: #f8f9fb; border-radius: 8px; }
+  .result-field .key { font-size: 0.7rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+  .result-field .val { font-size: 0.9rem; font-weight: 500; margin-top: 0.15rem; word-break: break-word; }
+  .result-field.full { grid-column: 1 / -1; }
+  .items-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.82rem; }
+  .items-table th { background: #f0f2f5; padding: 0.5rem; text-align: left; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; color: #555; }
+  .items-table td { padding: 0.5rem; border-top: 1px solid #e5e7eb; }
+  .error-msg { background: #fee2e2; color: #991b1b; padding: 1rem; border-radius: 8px; margin-top: 1rem; display: none; }
+  .error-msg.show { display: block; }
+  .raw-toggle { font-size: 0.8rem; color: #4a9eff; cursor: pointer; background: none; border: none; text-decoration: underline; }
+  .raw-json { display: none; background: #1a1a2e; color: #a5f3fc; padding: 1rem; border-radius: 8px; margin-top: 0.5rem; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+  .raw-json.show { display: block; }
+  @media (max-width: 600px) { .row { flex-direction: column; gap: 0.6rem; } .result-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Freight<span>Parse</span></h1>
+  <p>AI-Powered Freight Document Parser</p>
+</header>
+<div class="container">
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Document Type</label>
+        <select id="docType">
+          <option value="parse-packing-list">Packing List</option>
+          <option value="parse-bol">Bill of Lading</option>
+          <option value="parse-freight-invoice">Freight Invoice</option>
+        </select>
+      </div>
+      <div>
+        <label>Auth Mode</label>
+        <select id="authMode">
+          <option value="rapidapi">RapidAPI Key</option>
+          <option value="direct">Direct API Key</option>
+        </select>
+      </div>
+    </div>
+    <div>
+      <label>API Key</label>
+      <input type="text" id="apiKey" placeholder="Enter your API key">
+    </div>
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-icon">📄</div>
+      <p>Drag & drop a PDF or image here, or <strong>click to browse</strong></p>
+      <div class="filename" id="fileName"></div>
+      <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt">
+    </div>
+    <button class="btn" id="parseBtn" disabled>Parse Document</button>
+    <div class="error-msg" id="errorMsg"></div>
+  </div>
+
+  <div class="card results" id="resultsCard">
+    <div class="results-header">
+      <h3>Parsed Results</h3>
+      <span class="confidence" id="confidenceBadge"></span>
+    </div>
+    <div class="result-grid" id="resultGrid"></div>
+    <div style="margin-top:1rem; text-align:right;">
+      <button class="raw-toggle" id="rawToggle">Show raw JSON</button>
+    </div>
+    <pre class="raw-json" id="rawJson"></pre>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const dropzone = $('dropzone'), fileInput = $('fileInput'), parseBtn = $('parseBtn');
+const errorMsg = $('errorMsg'), resultsCard = $('resultsCard');
+let selectedFile = null;
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+
+function handleFile(file) {
+  if (!file) return;
+  selectedFile = file;
+  $('fileName').textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
+  dropzone.classList.add('has-file');
+  dropzone.querySelector('.dropzone-icon').textContent = '✅';
+  parseBtn.disabled = false;
+}
+
+parseBtn.addEventListener('click', async () => {
+  const apiKey = $('apiKey').value.trim();
+  if (!apiKey) { showError('Please enter your API key.'); return; }
+  if (!selectedFile) { showError('Please select a file.'); return; }
+
+  const docType = $('docType').value;
+  const authMode = $('authMode').value;
+  const url = (authMode === 'rapidapi'
+    ? 'https://freightparse.p.rapidapi.com'
+    : window.location.origin) + '/' + docType + '/upload';
+
+  const headers = {};
+  if (authMode === 'rapidapi') {
+    headers['X-RapidAPI-Key'] = apiKey;
+    headers['X-RapidAPI-Host'] = 'freightparse.p.rapidapi.com';
+  } else {
+    headers['X-API-Key'] = apiKey;
+  }
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  parseBtn.disabled = true;
+  parseBtn.innerHTML = '<span class="spinner"></span>Parsing...';
+  errorMsg.classList.remove('show');
+  resultsCard.classList.remove('show');
+
+  try {
+    const res = await fetch(url, { method: 'POST', headers, body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Request failed (' + res.status + ')');
+    }
+    const data = await res.json();
+    renderResults(data, docType);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    parseBtn.disabled = false;
+    parseBtn.innerHTML = 'Parse Document';
+  }
+});
+
+function showError(msg) { errorMsg.textContent = msg; errorMsg.classList.add('show'); }
+
+function renderResults(data, docType) {
+  const grid = $('resultGrid');
+  grid.innerHTML = '';
+  const conf = data.confidence || 0;
+  const badge = $('confidenceBadge');
+  badge.textContent = (conf * 100).toFixed(0) + '% confidence';
+  badge.className = 'confidence ' + (conf >= 0.8 ? 'high' : conf >= 0.5 ? 'medium' : 'low');
+
+  const skip = ['confidence', 'warnings', 'items', 'line_items', 'containers'];
+  for (const [k, v] of Object.entries(data)) {
+    if (skip.includes(k) || v === null || v === undefined) continue;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      for (const [sk, sv] of Object.entries(v)) {
+        if (sv !== null && sv !== undefined) addField(grid, k + '.' + sk, sv);
+      }
+    } else if (!Array.isArray(v)) {
+      addField(grid, k, v);
+    }
+  }
+
+  const tableData = data.items || data.line_items || data.containers || [];
+  if (tableData.length > 0) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'result-field full';
+    const keys = Object.keys(tableData[0]).filter(k => tableData.some(r => r[k] !== null));
+    let html = '<div class="key">ITEMS (' + tableData.length + ')</div><table class="items-table"><tr>';
+    keys.forEach(k => html += '<th>' + formatKey(k) + '</th>');
+    html += '</tr>';
+    tableData.forEach(row => {
+      html += '<tr>';
+      keys.forEach(k => html += '<td>' + (row[k] ?? '—') + '</td>');
+      html += '</tr>';
+    });
+    html += '</table>';
+    wrapper.innerHTML = html;
+    grid.appendChild(wrapper);
+  }
+
+  if (data.warnings && data.warnings.length) {
+    addField(grid, 'warnings', data.warnings.join('; '), true);
+  }
+
+  $('rawJson').textContent = JSON.stringify(data, null, 2);
+  $('rawJson').classList.remove('show');
+  $('rawToggle').textContent = 'Show raw JSON';
+  resultsCard.classList.add('show');
+  resultsCard.scrollIntoView({ behavior: 'smooth' });
+}
+
+function addField(grid, key, val, full) {
+  const div = document.createElement('div');
+  div.className = 'result-field' + (full ? ' full' : '');
+  div.innerHTML = '<div class="key">' + formatKey(key) + '</div><div class="val">' + val + '</div>';
+  grid.appendChild(div);
+}
+
+function formatKey(k) { return k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
+
+$('rawToggle').addEventListener('click', () => {
+  const el = $('rawJson');
+  const showing = el.classList.toggle('show');
+  $('rawToggle').textContent = showing ? 'Hide raw JSON' : 'Show raw JSON';
+});
+</script>
+</body>
+</html>
