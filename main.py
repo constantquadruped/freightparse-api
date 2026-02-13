@@ -511,6 +511,7 @@ async def root():
             {"path": "/parse-packing-list/upload", "method": "POST", "description": "Parse packing list (file upload: PDF/image/text)"},
         ],
         "docs": "/docs",
+        "demo": "https://freightparse-api.onrender.com/demo",
     }
 
 
