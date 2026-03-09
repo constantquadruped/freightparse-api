@@ -12,10 +12,13 @@ info:
     **How it works:** Paste raw text or OCR output from your freight documents.
     The API returns structured JSON with typed fields, confidence scores, and warnings.
 
+    **New in v2:** Batch endpoint for parsing up to 10 documents in one call.
+    Request tracing via X-Request-ID header. Improved reliability with retries.
+
     **Accuracy:** Powered by Claude AI with freight-specific parsing prompts.
     Handles major carriers (Maersk, MSC, CMA CGM, Hapag-Lloyd, etc.) and
     standard freight document formats.
-  version: 1.0.0
+  version: 2.0.0
   contact:
     name: FreightParse Support
 
@@ -63,6 +66,8 @@ paths:
           description: Rate limit exceeded
         "502":
           description: AI parsing failure
+        "504":
+          description: AI service timeout
 
   /parse-freight-invoice:
     post:
@@ -83,6 +88,9 @@ paths:
                   minLength: 20
                   maxLength: 50000
                   description: Raw freight invoice text or OCR output
+                carrier_hint:
+                  type: string
+                  description: "Carrier or vendor name hint"
             example:
               text: "FREIGHT INVOICE\nINVOICE NO: APX-2026-00847\nOcean Freight: $4,200.00..."
       responses:
@@ -120,6 +128,9 @@ paths:
                   minLength: 20
                   maxLength: 50000
                   description: Raw packing list text or OCR output
+                carrier_hint:
+                  type: string
+                  description: "Shipper or context hint"
             example:
               text: "PACKING LIST\nPL No: PL-GZ-2026-0471\nItem: 27\" LED Monitor..."
       responses:
@@ -137,6 +148,42 @@ paths:
           description: Rate limit exceeded
         "502":
           description: AI parsing failure
+
+  /parse-batch:
+    post:
+      operationId: parseBatch
+      summary: Parse Multiple Documents
+      description: |
+        Parse up to 10 documents in a single API call. Each document is processed
+        independently — failures on one document don't affect others.
+        Results include per-document success/failure status.
+      tags: [Batch]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+            example:
+              documents:
+                - doc_type: bol
+                  text: "BILL OF LADING\nB/L No: MEDU4712839..."
+                  carrier_hint: "MSC"
+                - doc_type: freight_invoice
+                  text: "FREIGHT INVOICE\nINVOICE NO: APX-2026-00847..."
+      responses:
+        "200":
+          description: Batch parsing results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+        "401":
+          description: Invalid API key
+        "422":
+          description: Validation error
+        "429":
+          description: Rate limit exceeded
 
 components:
   schemas:
@@ -187,6 +234,7 @@ components:
         warnings:
           type: array
           items: { type: string }
+        request_id: { type: string, nullable: true }
 
     InvoiceLineItem:
       type: object
@@ -229,6 +277,7 @@ components:
         warnings:
           type: array
           items: { type: string }
+        request_id: { type: string, nullable: true }
 
     PackingListItem:
       type: object
@@ -268,6 +317,56 @@ components:
         warnings:
           type: array
           items: { type: string }
+        request_id: { type: string, nullable: true }
+
+    BatchDocumentRequest:
+      type: object
+      required: [doc_type, text]
+      properties:
+        doc_type:
+          type: string
+          enum: [bol, freight_invoice, packing_list]
+          description: "Document type to parse"
+        text:
+          type: string
+          minLength: 20
+          maxLength: 50000
+          description: "Raw document text or OCR output"
+        carrier_hint:
+          type: string
+          description: "Carrier or context hint"
+
+    BatchRequest:
+      type: object
+      required: [documents]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchDocumentRequest"
+          minItems: 1
+          maxItems: 10
+          description: "Up to 10 documents per batch"
+
+    BatchResultItem:
+      type: object
+      properties:
+        index: { type: integer }
+        doc_type: { type: string }
+        success: { type: boolean }
+        data: { type: object, nullable: true }
+        error: { type: string, nullable: true }
+
+    BatchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/BatchResultItem" }
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        request_id: { type: string, nullable: true }
 
   securitySchemes:
     RapidAPIKey:
