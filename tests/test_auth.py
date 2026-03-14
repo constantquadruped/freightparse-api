@@ -57,3 +57,29 @@ async def test_rate_limit_returns_429(client, auth_headers):
         resp = await client.post("/parse-bol", json={"text": "x" * 25}, headers=auth_headers)
         assert resp.status_code == 429
         assert "Retry-After" in resp.headers
+
+
+@pytest.mark.anyio
+async def test_rate_limit_isolated_per_direct_key(client):
+    import main
+    main.rate_store.clear()
+
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text='{"confidence": 0.5}')]
+
+    with patch("main.get_client") as mock_get, patch("main.RATE_LIMIT", 1):
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_msg)
+        mock_get.return_value = mock_client
+
+        first_key = {"X-API-Key": "test-key-1", "Content-Type": "application/json"}
+        second_key = {"X-API-Key": "test-key-2", "Content-Type": "application/json"}
+
+        resp = await client.post("/parse-bol", json={"text": "x" * 25}, headers=first_key)
+        assert resp.status_code == 200
+
+        resp = await client.post("/parse-bol", json={"text": "x" * 25}, headers=second_key)
+        assert resp.status_code == 200
+
+        resp = await client.post("/parse-bol", json={"text": "x" * 25}, headers=first_key)
+        assert resp.status_code == 429

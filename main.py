@@ -6,6 +6,7 @@ v2.0.0 — Production hardened: async, retries, logging, batch, security, file u
 """
 
 import anthropic
+import anyio
 import io
 import json
 import logging
@@ -15,7 +16,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TypedDict
 
 import pdfplumber
 from pathlib import Path
@@ -160,18 +161,25 @@ _raw_keys = os.getenv("API_KEYS", "")
 INTERNAL_API_KEYS = set(filter(None, _raw_keys.split(","))) if _raw_keys else set()
 
 
+class AuthContext(TypedDict):
+    mode: str
+    rate_limit_key: str
+
+
 async def verify_api_key(
     rapidapi_secret: Optional[str] = Security(API_KEY_HEADER),
     request: Request = None,
 ):
     # RapidAPI sends proxy secret
     if RAPIDAPI_SECRET and rapidapi_secret and rapidapi_secret == RAPIDAPI_SECRET:
-        return "rapidapi"
+        rapidapi_key = request.headers.get("X-RapidAPI-Key", "") if request else ""
+        caller_key = rapidapi_key or (request.client.host if request and request.client else "rapidapi-anon")
+        return {"mode": "rapidapi", "rate_limit_key": f"rapidapi:{caller_key}"}
 
     # Direct callers use X-API-Key
     direct_key = request.headers.get("X-API-Key", "") if request else ""
     if direct_key and direct_key in INTERNAL_API_KEYS:
-        return "direct"
+        return {"mode": "direct", "rate_limit_key": f"direct:{direct_key}"}
 
     raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
@@ -205,6 +213,32 @@ def check_rate_limit(key: str):
             headers={"Retry-After": str(RATE_WINDOW)},
         )
     hits.append(now)
+
+
+def _extract_text_from_pdf_bytes(content: bytes) -> str:
+    """Synchronous PDF extraction helper for worker thread execution."""
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        pages = []
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                pages.append(text)
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    row_text = " | ".join(
+                        str(cell) if cell else "" for cell in row
+                    )
+                    pages.append(row_text)
+        extracted = "\n".join(pages)
+
+    if not extracted.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Could not extract text from PDF. The file may be image-only. "
+            "Try using an OCR tool first, then submit the text.",
+        )
+    return extracted
 
 
 # ---------------------------------------------------------------------------
@@ -578,28 +612,7 @@ async def extract_text_from_upload(file: UploadFile) -> str:
     # PDF files
     if content_type == "application/pdf" or filename.endswith(".pdf"):
         try:
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                pages = []
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        pages.append(text)
-                    # Also extract tables as text
-                    tables = page.extract_tables()
-                    for table in tables:
-                        for row in table:
-                            row_text = " | ".join(
-                                str(cell) if cell else "" for cell in row
-                            )
-                            pages.append(row_text)
-                extracted = "\n".join(pages)
-                if not extracted.strip():
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Could not extract text from PDF. The file may be image-only. "
-                        "Try using an OCR tool first, then submit the text.",
-                    )
-                return extracted
+            return await anyio.to_thread.run_sync(_extract_text_from_pdf_bytes, content)
         except HTTPException:
             raise
         except Exception as e:
@@ -749,27 +762,25 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check — verifies Claude API connectivity."""
-    status = {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Cheap health check for infrastructure liveness and local config readiness."""
+    status = {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "available",
+    }
     try:
-        client = get_client()
-        # Lightweight ping — counts as ~zero tokens
-        await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1,
-            messages=[{"role": "user", "content": "ping"}],
-        )
-        status["ai_service"] = "connected"
+        get_client()
+        status["ai_service"] = "configured"
     except Exception as e:
         status["status"] = "degraded"
-        status["ai_service"] = "unavailable"
-        logger.warning("Health check: AI service unavailable — %s", type(e).__name__)
+        status["ai_service"] = "misconfigured"
+        logger.warning("Health check: AI client unavailable — %s", type(e).__name__)
     return status
 
 
 @app.post("/parse-bol", response_model=BOLResponse)
-async def parse_bol(req: BOLRequest, request: Request, auth: str = Depends(verify_api_key)):
-    check_rate_limit(auth)
+async def parse_bol(req: BOLRequest, request: Request, auth: AuthContext = Depends(verify_api_key)):
+    check_rate_limit(auth["rate_limit_key"])
     injection_warnings = check_injection(req.text)
     data = await parse_document(BOL_SYSTEM_PROMPT, req.text, req.carrier_hint)
     if injection_warnings:
@@ -779,8 +790,8 @@ async def parse_bol(req: BOLRequest, request: Request, auth: str = Depends(verif
 
 
 @app.post("/parse-freight-invoice", response_model=FreightInvoiceResponse)
-async def parse_freight_invoice(req: FreightInvoiceRequest, request: Request, auth: str = Depends(verify_api_key)):
-    check_rate_limit(auth)
+async def parse_freight_invoice(req: FreightInvoiceRequest, request: Request, auth: AuthContext = Depends(verify_api_key)):
+    check_rate_limit(auth["rate_limit_key"])
     injection_warnings = check_injection(req.text)
     data = await parse_document(INVOICE_SYSTEM_PROMPT, req.text, req.carrier_hint)
     if injection_warnings:
@@ -790,8 +801,8 @@ async def parse_freight_invoice(req: FreightInvoiceRequest, request: Request, au
 
 
 @app.post("/parse-packing-list", response_model=PackingListResponse)
-async def parse_packing_list(req: PackingListRequest, request: Request, auth: str = Depends(verify_api_key)):
-    check_rate_limit(auth)
+async def parse_packing_list(req: PackingListRequest, request: Request, auth: AuthContext = Depends(verify_api_key)):
+    check_rate_limit(auth["rate_limit_key"])
     injection_warnings = check_injection(req.text)
     data = await parse_document(PACKING_LIST_SYSTEM_PROMPT, req.text, req.carrier_hint)
     if injection_warnings:
@@ -801,9 +812,9 @@ async def parse_packing_list(req: PackingListRequest, request: Request, auth: st
 
 
 @app.post("/parse-batch", response_model=BatchResponse)
-async def parse_batch(req: BatchRequest, request: Request, auth: str = Depends(verify_api_key)):
+async def parse_batch(req: BatchRequest, request: Request, auth: AuthContext = Depends(verify_api_key)):
     """Parse up to 10 documents in one call. Each processed sequentially to respect rate limits."""
-    check_rate_limit(auth)
+    check_rate_limit(auth["rate_limit_key"])
     request_id = getattr(request.state, "request_id", None)
     results = []
 
@@ -851,10 +862,10 @@ async def parse_bol_upload(
     request: Request,
     file: UploadFile = File(..., description="PDF, image, or text file of a Bill of Lading"),
     carrier_hint: Optional[str] = Form(None, description="Carrier name hint"),
-    auth: str = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ):
     """Parse a Bill of Lading from an uploaded file (PDF, image, or text)."""
-    check_rate_limit(auth)
+    check_rate_limit(auth["rate_limit_key"])
     text = await extract_text_from_upload(file)
     injection_warnings = check_injection(text)
     data = await parse_document(BOL_SYSTEM_PROMPT, text, carrier_hint)
@@ -868,10 +879,10 @@ async def parse_bol_upload(
 async def parse_freight_invoice_upload(
     request: Request,
     file: UploadFile = File(..., description="PDF, image, or text file of a freight invoice"),
-    auth: str = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ):
     """Parse a freight invoice from an uploaded file (PDF, image, or text)."""
-    check_rate_limit(auth)
+    check_rate_limit(auth["rate_limit_key"])
     text = await extract_text_from_upload(file)
     injection_warnings = check_injection(text)
     data = await parse_document(INVOICE_SYSTEM_PROMPT, text)
@@ -885,10 +896,10 @@ async def parse_freight_invoice_upload(
 async def parse_packing_list_upload(
     request: Request,
     file: UploadFile = File(..., description="PDF, image, or text file of a packing list"),
-    auth: str = Depends(verify_api_key),
+    auth: AuthContext = Depends(verify_api_key),
 ):
     """Parse a packing list from an uploaded file (PDF, image, or text)."""
-    check_rate_limit(auth)
+    check_rate_limit(auth["rate_limit_key"])
     text = await extract_text_from_upload(file)
     injection_warnings = check_injection(text)
     data = await parse_document(PACKING_LIST_SYSTEM_PROMPT, text)

@@ -4,11 +4,12 @@ import json
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 
-from main import extract_json, check_injection
+from main import extract_json, check_injection, extract_text_from_upload
 from tests.conftest import (
     SAMPLE_BOL, SAMPLE_INVOICE, SAMPLE_PACKING_LIST,
     MOCK_BOL_RESPONSE, MOCK_INVOICE_RESPONSE, MOCK_PACKING_RESPONSE,
 )
+from starlette.datastructures import Headers, UploadFile
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +77,27 @@ class TestInjectionGuard:
         # "system" and "instructions" can appear in normal freight docs
         text = "Shipping instructions: deliver to port of discharge. System: FOB"
         assert check_injection(text) == []
+
+
+@pytest.mark.anyio
+async def test_pdf_extraction_runs_via_worker_thread():
+    upload = UploadFile(
+        filename="test.pdf",
+        file=None,
+        headers=Headers({"content-type": "application/pdf"}),
+    )
+
+    async def fake_read():
+        return b"%PDF-1.4 fake"
+
+    upload.read = fake_read
+
+    with patch("main.anyio.to_thread.run_sync", new_callable=AsyncMock) as mock_run_sync:
+        mock_run_sync.return_value = "extracted pdf text"
+        result = await extract_text_from_upload(upload)
+
+    assert result == "extracted pdf text"
+    mock_run_sync.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
