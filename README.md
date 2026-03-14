@@ -73,21 +73,16 @@ curl -X POST http://localhost:8000/parse-batch \
 
 ## Deployment
 
-### Railway
+### GitHub-Connected Hosting
+
+Push to `main` on GitHub to trigger the connected production deployment.
+
+Configure these environment variables in the hosting provider:
 
 ```bash
-railway login && railway init && railway up
-railway variables set ANTHROPIC_API_KEY=sk-ant-xxxxx
-railway variables set API_KEYS=your-production-key
-```
-
-### Fly.io
-
-```bash
-fly launch
-fly secrets set ANTHROPIC_API_KEY=sk-ant-xxxxx
-fly secrets set API_KEYS=your-production-key
-fly deploy
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+API_KEYS=your-production-key
+RAPIDAPI_PROXY_SECRET=your-rapidapi-proxy-secret
 ```
 
 ### Docker
@@ -102,7 +97,7 @@ docker run -p 8000:8000 \
 
 ## RapidAPI Setup
 
-1. Deploy to Railway or Fly.io (get public URL)
+1. Deploy the backend through the GitHub-connected host and get the public URL
 2. Go to https://rapidapi.com/provider
 3. Create new API, import `rapidapi_spec.yaml`
 4. Set base URL to your deployed app
@@ -142,7 +137,7 @@ docker run -p 8000:8000 \
 - **Structured logging** — timestamps, levels, and request IDs
 - **Prompt injection guard** — detects and warns on suspicious input patterns
 - **Security hardening** — no default API keys, configurable CORS, no internal error leaking
-- **Improved health check** — verifies Claude API connectivity, not just server status
+- **Improved health check** — lightweight readiness check with no billable Claude call
 - **Rate limiter cleanup** — no more memory leak from abandoned rate limit entries
 - **Better JSON extraction** — brace-matching parser handles edge cases
 - **Carrier hints on all endpoints** — invoice and packing list now accept hints too
