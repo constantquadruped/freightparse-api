@@ -42,7 +42,7 @@ logger = logging.getLogger("freightparse")
 # Config
 # ---------------------------------------------------------------------------
 
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250514")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5-20250929")
 CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "4096"))
 CLAUDE_TIMEOUT = int(os.getenv("CLAUDE_TIMEOUT", "60"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))
@@ -879,13 +879,14 @@ async def parse_bol_upload(
 async def parse_freight_invoice_upload(
     request: Request,
     file: UploadFile = File(..., description="PDF, image, or text file of a freight invoice"),
+    carrier_hint: Optional[str] = Form(None, description="Carrier or vendor hint"),
     auth: AuthContext = Depends(verify_api_key),
 ):
     """Parse a freight invoice from an uploaded file (PDF, image, or text)."""
     check_rate_limit(auth["rate_limit_key"])
     text = await extract_text_from_upload(file)
     injection_warnings = check_injection(text)
-    data = await parse_document(INVOICE_SYSTEM_PROMPT, text)
+    data = await parse_document(INVOICE_SYSTEM_PROMPT, text, carrier_hint)
     if injection_warnings:
         data.setdefault("warnings", []).extend(injection_warnings)
     data["request_id"] = getattr(request.state, "request_id", None)
@@ -896,13 +897,14 @@ async def parse_freight_invoice_upload(
 async def parse_packing_list_upload(
     request: Request,
     file: UploadFile = File(..., description="PDF, image, or text file of a packing list"),
+    carrier_hint: Optional[str] = Form(None, description="Shipper or context hint"),
     auth: AuthContext = Depends(verify_api_key),
 ):
     """Parse a packing list from an uploaded file (PDF, image, or text)."""
     check_rate_limit(auth["rate_limit_key"])
     text = await extract_text_from_upload(file)
     injection_warnings = check_injection(text)
-    data = await parse_document(PACKING_LIST_SYSTEM_PROMPT, text)
+    data = await parse_document(PACKING_LIST_SYSTEM_PROMPT, text, carrier_hint)
     if injection_warnings:
         data.setdefault("warnings", []).extend(injection_warnings)
     data["request_id"] = getattr(request.state, "request_id", None)

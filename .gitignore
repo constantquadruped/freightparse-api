@@ -6,3 +6,6 @@ dist/
 build/
 .venv/
 venv/
+
+# local installed-deps cache (not for the repo)
+.deps/
